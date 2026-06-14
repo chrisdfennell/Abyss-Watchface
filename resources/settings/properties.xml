@@ -1,0 +1,7 @@
+<properties>
+    <!-- Reserved toggle -->
+    <property id="ShowSeconds" type="boolean">false</property>
+
+    <!-- Steps that equal a full depth ring in steps mode. 0 = ActivityMonitor's own goal. -->
+    <property id="StepGoalOverride" type="number">0</property>
+</properties>

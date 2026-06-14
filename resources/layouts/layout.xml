@@ -1,0 +1,7 @@
+<!--
+    Abyss draws everything procedurally in AbyssView.onUpdate() so it can scale to
+    any resolution and render the glow / gauge / sonar effects, so this layout is
+    intentionally empty. It is kept for project-convention parity.
+-->
+<layout id="WatchFace" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="https://developer.garmin.com/downloads/connect-iq/resources.xsd">
+</layout>

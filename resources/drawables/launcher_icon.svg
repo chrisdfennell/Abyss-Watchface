@@ -1,0 +1,32 @@
+<svg width="48" height="48" viewBox="0 0 48 48" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <!-- Abyss-blue backdrop -->
+  <rect width="48" height="48" rx="8" fill="#03070F"/>
+  <defs>
+    <radialGradient id="abyss" cx="50%" cy="42%" r="62%">
+      <stop offset="0%" stop-color="#06203A"/>
+      <stop offset="70%" stop-color="#04101F"/>
+      <stop offset="100%" stop-color="#010308"/>
+    </radialGradient>
+  </defs>
+  <circle cx="24" cy="24" r="21" fill="url(#abyss)"/>
+
+  <!-- Outer depth ring: faint full track + bright cyan descent arc from 12 o'clock -->
+  <circle cx="24" cy="24" r="19" stroke="#114049" stroke-width="1.4"/>
+  <path d="M 24 5 A 19 19 0 0 1 41.5 16.5" stroke="#33D6F0" stroke-width="2.4" stroke-linecap="round"/>
+  <circle cx="41.5" cy="16.5" r="1.8" fill="#7CF2FF"/>
+
+  <!-- O2 / air tank gauge (left), cyan fill from the bottom -->
+  <rect x="8.5" y="16" width="4.5" height="16" rx="2.25" fill="#06121C" stroke="#1A6E7E" stroke-width="0.9"/>
+  <rect x="8.5" y="23" width="4.5" height="9" rx="2.25" fill="#33D6F0"/>
+
+  <!-- Sonar ping rings around center -->
+  <circle cx="25" cy="24" r="6" stroke="#33D6F0" stroke-width="1.2" opacity="0.85"/>
+  <circle cx="25" cy="24" r="9.5" stroke="#1F8FA0" stroke-width="1" opacity="0.55"/>
+
+  <!-- Center HUD time bar (vector strokes, no <text> so it rasterizes in headless CI) -->
+  <g stroke="#E6FAFF" stroke-width="1.4" stroke-linecap="round">
+    <line x1="22" y1="22" x2="22" y2="26"/>
+    <line x1="25" y1="22" x2="25" y2="26"/>
+    <line x1="28" y1="22" x2="28" y2="26"/>
+  </g>
+</svg>

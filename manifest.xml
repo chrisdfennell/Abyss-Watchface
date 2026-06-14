@@ -1,0 +1,39 @@
+<iq:manifest version="3" xmlns:iq="http://www.garmin.com/xml/connectiq">
+    <!--
+        Abyss - a Subnautica-flavored dive-computer HUD watch face for the
+        Garmin tactix 8.
+
+        The tactix 8 runs on the Fenix 8 (AMOLED) platform. There is no dedicated
+        "tactix8" product id in the Connect IQ SDK, so we target the Fenix 8 AMOLED
+        products that share the exact same hardware/firmware/resolution:
+            fenix847mm    -> 454x454 (51mm case)
+            fenix843mm    -> 416x416 (47mm case)
+            fenix8pro47mm -> 454x454 (Fenix 8 Pro, same panel)
+        The lower-resolution Fenix 8 Solar (MIP) variants are included too so the
+        face still installs on those watches; everything is laid out relative to the
+        screen size so it scales cleanly.
+
+        minApiLevel 4.0.0 guarantees vector fonts (3.4+) and the modern Activity /
+        Weather APIs. All optional features are still guarded with `has` checks and
+        try/catch at runtime so nothing crashes on a device that lacks them.
+
+        NOTE: this UUID is unique to Abyss (generated fresh, not shared with any
+        other project).
+    -->
+    <iq:application id="154a5d0f-53f7-4848-ae1c-af28334f3105" type="watchface" name="@Strings.AppName" entry="AbyssApp" launcherIcon="@Drawables.LauncherIcon" minApiLevel="4.0.0">
+        <iq:products>
+            <iq:product id="fenix847mm"/>
+            <iq:product id="fenix843mm"/>
+            <iq:product id="fenix8pro47mm"/>
+            <iq:product id="fenix8solar51mm"/>
+            <iq:product id="fenix8solar47mm"/>
+        </iq:products>
+        <iq:permissions>
+        </iq:permissions>
+        <iq:languages>
+            <iq:language>eng</iq:language>
+        </iq:languages>
+        <iq:barrels>
+        </iq:barrels>
+    </iq:application>
+</iq:manifest>

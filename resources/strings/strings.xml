@@ -1,0 +1,10 @@
+<strings xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="https://developer.garmin.com/downloads/connect-iq/resources.xsd">
+    <string id="AppName">Abyss</string>
+
+    <!-- Settings -->
+    <string id="ShowSecondsTitle">Show Seconds</string>
+    <string id="ShowSecondsPrompt">Reserved toggle (the depth ring already tracks seconds-resolution day progress).</string>
+
+    <string id="StepGoalTitle">Step Goal Override</string>
+    <string id="StepGoalPrompt">Steps for a full depth ring when the ring is in steps mode. Set 0 to use the watch's own daily step goal.</string>
+</strings>

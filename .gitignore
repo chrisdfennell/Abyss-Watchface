@@ -1,0 +1,36 @@
+# Connect IQ Build Outputs
+bin/
+*.prg
+*.iq
+*.prg.debug.xml
+
+# Private Developer Keys (NEVER commit these!)
+*.der
+*.pem
+*.key
+developer_key.der
+
+# IDE and Editor local settings
+/.vscode/
+.vscode/tasks.json
+.vscode/launch.json
+.vscode/settings.json
+.settings/
+.project
+.pydevproject
+
+# System temporary files
+Thumbs.db
+Desktop.ini
+.DS_Store
+
+# Local/temporary script files
+*.tmp
+*.log
+/temp*
+
+# Local build configurations
+build_config.json
+
+# Local Claude Code config (machine-specific paths / permissions)
+.claude/

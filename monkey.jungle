@@ -1,0 +1,19 @@
+project.manifest = manifest.xml
+
+# Default resource path. The base resources/ folder holds everything the face
+# needs: the procedural layout (empty), strings, settings, the launcher icon, and
+# the (placeholder) drawable assets. Because Abyss renders procedurally and scales
+# to dc.getWidth()/getHeight(), the same base resources work on every panel size.
+base.resourcePath = resources
+
+# Device-specific overrides. Each per-resolution folder exists so you can drop in a
+# correctly-sized generated asset (e.g. a panel-fitted bg_vignette.png or hud_frame.png)
+# without touching the base set - the base placeholders are used until you do.
+#
+# AMOLED (51/47mm + Pro):
+fenix847mm.resourcePath    = $(base.resourcePath);resources-round-454x454
+fenix8pro47mm.resourcePath = $(base.resourcePath);resources-round-454x454
+fenix843mm.resourcePath    = $(base.resourcePath);resources-round-416x416
+# MIP / Solar (smaller panels):
+fenix8solar51mm.resourcePath = $(base.resourcePath);resources-round-280x280
+fenix8solar47mm.resourcePath = $(base.resourcePath);resources-round-260x260

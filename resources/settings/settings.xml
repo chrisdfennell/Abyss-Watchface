@@ -1,0 +1,11 @@
+<settings>
+    <!-- Reserved toggle, surfaced for parity / future use -->
+    <setting propertyKey="@Properties.ShowSeconds" title="@Strings.ShowSecondsTitle" prompt="@Strings.ShowSecondsPrompt">
+        <settingConfig type="boolean" />
+    </setting>
+
+    <!-- Override the steps target used by the depth ring in steps mode (0 = device goal) -->
+    <setting propertyKey="@Properties.StepGoalOverride" title="@Strings.StepGoalTitle" prompt="@Strings.StepGoalPrompt">
+        <settingConfig type="numeric" min="0" max="100000" />
+    </setting>
+</settings>

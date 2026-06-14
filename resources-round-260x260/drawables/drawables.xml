@@ -1,0 +1,7 @@
+<drawables xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="https://developer.garmin.com/downloads/connect-iq/resources.xsd">
+    <!--
+        260x260 (Fenix 8 Solar 47mm, MIP) per-panel art overrides. Drop generated
+        260x260 PNGs here and override the matching id. Until then the base
+        placeholders are used (the MIP render path is procedural-only by default).
+    -->
+</drawables>

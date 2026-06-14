@@ -1,0 +1,19 @@
+<drawables xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="https://developer.garmin.com/downloads/connect-iq/resources.xsd">
+    <bitmap id="LauncherIcon" filename="launcher_icon.svg" dithering="none" />
+
+    <!--
+        Generated-art placeholders. The shipped PNGs are tiny + transparent so the
+        project COMPILES and renders 100% procedurally out of the box. Replace each
+        file with your Antigravity-generated art (see the asset specs in README.md),
+        then flip the matching USE_ART_* flag at the top of source/AbyssView.mc.
+
+        Per-panel real art: drop a correctly-sized override of the same filename into
+        resources-round-454x454/drawables, resources-round-416x416/drawables, etc.
+        and declare it in that folder's drawables.xml.
+    -->
+    <bitmap id="bg_vignette"      filename="bg_vignette.png"      dithering="none" />
+    <bitmap id="hud_frame"        filename="hud_frame.png"        dithering="none" />
+    <bitmap id="o2_gauge_housing" filename="o2_gauge_housing.png" dithering="none" />
+    <bitmap id="depth_ring"       filename="depth_ring.png"       dithering="none" />
+    <bitmap id="sonar_ring"       filename="sonar_ring.png"       dithering="none" />
+</drawables>

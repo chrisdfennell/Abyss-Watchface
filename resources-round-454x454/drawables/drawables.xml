@@ -1,0 +1,12 @@
+<drawables xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="https://developer.garmin.com/downloads/connect-iq/resources.xsd">
+    <!--
+        454x454 (tactix 8 51mm / Fenix 8 Pro) per-panel art overrides.
+
+        To use a panel-fitted asset, drop the generated 454x454 PNG into this folder
+        and override the matching id, e.g.:
+
+            <bitmap id="bg_vignette" filename="bg_vignette.png" dithering="none" />
+
+        Until then the base resources/drawables placeholders are used.
+    -->
+</drawables>
