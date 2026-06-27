@@ -4,6 +4,33 @@ All notable changes to Abyss are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project aims to
 follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.0] - 2026-06-26
+
+### Added
+- **BODY reserve tank**: Body Battery drawn as a second side gauge mirroring the air
+  tank (mint → amber → red), read defensively from `SensorHistory`.
+- **Top weather line**: short condition word, current temperature, and today's
+  forecast high/low from `Weather.getCurrentConditions()`.
+- **Sunrise / sunset times**: surface-light readout in the top stack, computed from
+  the last-known position with a NOAA-style equation (no live GPS).
+- **More data fields**: resting heart rate (as a sub-value under PULSE), calories,
+  floors climbed, intensity/active minutes, and stress — each degrading to `--` when
+  unavailable.
+- **Optional compass HEADING field** (off by default) behind a new
+  *Show Compass Heading* setting; the magnetometer is battery-heavy.
+- **Responsive MIP layout**: low-resolution Solar panels (280×280 / 260×260) now use
+  the device's bold bitmap fonts and a leaner, well-spaced field set so every value
+  stays legible, while the AMOLED panels keep the dense vector-font HUD.
+
+### Changed
+- **Self-describing gauge labels**: the air/battery tank is now **BATT** (was *O2*)
+  and the stamina tank is **BODY**, so the readouts no longer need guessing.
+- Declared the `SensorHistory`, `Positioning`, and `UserProfile` permissions required
+  by the new data sources.
+
+### Removed
+- The reserved **Show Seconds** setting, replaced by the compass toggle.
+
 ## [1.0.0]
 
 ### Added

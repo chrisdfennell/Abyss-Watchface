@@ -1,7 +1,8 @@
 <properties>
-    <!-- Reserved toggle -->
-    <property id="ShowSeconds" type="boolean">false</property>
-
     <!-- Steps that equal a full depth ring in steps mode. 0 = ActivityMonitor's own goal. -->
     <property id="StepGoalOverride" type="number">0</property>
+
+    <!-- Show the compass HEADING field. Off by default: the magnetometer draws
+         noticeably more battery and often has no reading on a watch face. -->
+    <property id="EnableCompass" type="boolean">false</property>
 </properties>

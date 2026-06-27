@@ -7,47 +7,47 @@ import Toybox.Time.Gregorian;
 import Toybox.ActivityMonitor;
 import Toybox.Activity;
 import Toybox.Application;
+import Toybox.SensorHistory;
+import Toybox.Weather;
+import Toybox.Position;
+import Toybox.UserProfile;
 import Toybox.Math;
 
 //
 // Abyss - a Subnautica-flavored dive-computer HUD watch face for the tactix 8.
 //
-// The face reads like an underwater PDA / dive-computer readout:
+// The face reads like an underwater PDA / dive-computer readout. Layout zones,
+// all relative to dc.getWidth()/getHeight() + the screen center (no hardcoded px):
 //
-//   - Outer "depth ring":  an arc sweeping the bezel like a descent gauge,
-//                          mapped to the day's progress (or steps - see RING_MODE).
-//   - Left "O2 gauge":     device battery drawn as an air-supply tank that drains
-//                          as the battery drops; cyan when full -> amber -> red low.
-//   - Center HUD:          large time (12/24h follows the device), a "DEPTH" line
-//                          driven by barometric elevation, and small TEMP / HR fields.
-//   - Sonar ping:          a subtle cyan ring that pulses outward, ACTIVE state only.
-//
-// Everything is laid out relative to dc.getWidth()/getHeight() and the screen
-// center, so it scales cleanly between the 454x454 (51mm) and 416x416 (47mm) AMOLED
-// panels and the 280x280 / 260x260 MIP panels - no hardcoded pixel coordinates.
+//   - Outer "depth ring":  descent-gauge arc (day progress, or steps - RING_MODE).
+//   - Left  "BATT" tank:   device battery as a draining air supply (cyan->amber->red).
+//   - Right "BODY" tank:   Body Battery as a stamina reserve (mint->amber->red).
+//   - Top stack:           sunrise/sunset, date (+ notification badge), a weather
+//                          line (condition / temp / hi-lo), steps/distance, and an
+//                          optional compass heading (off by default).
+//   - Center:              large time, then a "DEPTH" line (barometric elevation).
+//   - Bottom rows:         PULSE (+resting) / CAL / FLOORS, then STRESS / ACTIVE / PRESS.
+//   - Sonar ping:          a cyan ring pulse, ACTIVE state only.
 //
 // Two render paths share one onUpdate():
-//   - Full / active mode:        glows, filled gauges, sonar pulse (mLowPower == false)
-//   - Always-on / low-power:     dim thin ring outlines + time only, burn-in shifted
+//   - Full / active:   gradients, filled gauges, all fields, sonar pulse.
+//   - Always-on:       dim time + thin ring/tank outlines only, burn-in shifted.
 //
-// The face is fully PROCEDURAL: it compiles and looks complete with no image assets.
-// Optional generated art (HUD frame, gauge housing, sonar rings, vignette) can be
-// dropped in later - see the USE_ART_* flags and the README asset specs.
+// Live data is read defensively (has-checks + try/catch); any missing value shows a
+// blank "--" rather than crashing. The face is otherwise fully procedural and
+// compiles/renders complete with no image assets (optional art via USE_ART_* flags).
 //
 class AbyssView extends WatchUi.WatchFace {
 
     // --- Configuration knobs --------------------------------------------------
     // Outer depth ring source: 0 = day progress (midnight -> now), 1 = steps / goal.
-    // Flip this single constant to switch what the bezel arc represents.
     private const RING_MODE = 0;
 
-    // Battery % at/below which the O2 gauge starts shifting toward amber/red.
-    private const O2_WARN = 50;   // begins warming below this
-    private const O2_LOW  = 20;   // full red below this
+    // Battery / Body-Battery % thresholds where a tank gauge warms to amber / red.
+    private const WARN_PCT = 50;
+    private const LOW_PCT  = 20;
 
-    // Optional generated-art toggles. Leave false to render procedurally (the
-    // default look). After dropping a real PNG into resources*/drawables/ (see
-    // README asset specs), flip the matching flag to draw the bitmap instead.
+    // Optional generated-art toggles (procedural fallback when false / missing).
     private const USE_ART_BG    = false;  // bg_vignette.png
     private const USE_ART_FRAME = false;  // hud_frame.png
     private const USE_ART_SONAR = false;  // sonar_ring.png
@@ -58,55 +58,56 @@ class AbyssView extends WatchUi.WatchFace {
     private var mCenterX as Number = 0;
     private var mCenterY as Number = 0;
     private var mRadius as Number = 0;
+    private var mSmall as Boolean = false;  // low-res MIP panels (<= 320px): leaner layout, bitmap fonts
 
     // --- State ---
     private var mIsSleep as Boolean = false;
-    private var mLowPower as Boolean = false;  // true only on AMOLED in Always-On (burn-in) mode
-    private var mFlat as Boolean = false;      // true on MIP: flat fills, skip soft glows
-    private var mLastMin as Number = -1;       // throttles low-power partial updates
+    private var mLowPower as Boolean = false;  // AMOLED Always-On (burn-in) only
+    private var mFlat as Boolean = false;      // MIP: flat fills, skip soft glows
+    private var mLastMin as Number = -1;
 
-    // --- Settings (see resources/settings) ---
-    private var mShowSeconds as Boolean = false;
-    private var mStepGoalOverride as Number = 0;  // 0 => use device step goal
+    // --- Settings ---
+    private var mStepGoalOverride as Number = 0;  // 0 => device step goal
+    private var mEnableCompass as Boolean = false; // magnetometer is battery-heavy
 
-    // --- Fonts (vector fonts, scaled to the panel, with safe fallbacks) ---
+    // --- Fonts (vector, scaled to the panel, with built-in fallbacks) ---
     private var mFontTime  as Graphics.FontType or Null = null;
     private var mFontValue as Graphics.FontType or Null = null;
     private var mFontLabel as Graphics.FontType or Null = null;
+    private var mFontMicro as Graphics.FontType or Null = null;
 
-    // --- Optional cached drawables (loaded in onLayout, null if absent) ---
+    // --- Optional cached art ---
     private var mBgArt    as WatchUi.BitmapResource or Null = null;
     private var mFrameArt as WatchUi.BitmapResource or Null = null;
     private var mSonarArt as WatchUi.BitmapResource or Null = null;
 
-    // --- Abyss palette (abyss-blue background, cyan/amber HUD) -----------------
-    private const C_BG_TOP    = 0x02060E;  // near-black blue at the top
-    private const C_BG_MID    = 0x05182C;  // faint abyss glow toward center
-    private const C_BG_BOTTOM = 0x010308;  // darkest at the bottom ("the deep")
-    private const BG_CLEAR    = 0x01040A;  // base clear color
+    // --- Abyss palette --------------------------------------------------------
+    private const C_BG_TOP    = 0x02060E;
+    private const C_BG_MID    = 0x05182C;
+    private const C_BG_BOTTOM = 0x010308;
+    private const BG_CLEAR    = 0x01040A;
 
-    private const C_CYAN       = 0x33D6F0;  // primary HUD cyan
-    private const C_CYAN_BRIGHT = 0x7CF2FF; // highlight cyan
-    private const C_CYAN_DIM   = 0x1A6E7E;  // dim cyan (tracks, AOD)
-    private const C_AMBER      = 0xFFB020;  // warning amber
-    private const C_RED        = 0xFF4530;  // low / danger red
-    private const C_TEXT       = 0xE6FAFF;  // near-white HUD text
-    private const C_TEXT_DIM   = 0x6E7A80;  // muted label gray-cyan
-    private const C_AOD        = 0x4A6E76;  // dim cyan-gray for always-on
+    private const C_CYAN        = 0x33D6F0;
+    private const C_CYAN_BRIGHT = 0x7CF2FF;
+    private const C_BIO         = 0x40E8A8;  // mint-green for the BIO (Body Battery) tank
+    private const C_AMBER       = 0xFFB020;
+    private const C_RED         = 0xFF4530;
+    private const C_TEXT        = 0xE6FAFF;
+    private const C_TEXT_DIM    = 0x6E8A92;
+    private const C_AOD         = 0x4A6E76;
 
     function initialize() {
         WatchFace.initialize();
         loadSettings();
     }
 
-    // Read user settings; safe to call any time (e.g. from App.onSettingsChanged).
     function loadSettings() as Void {
         try {
             if (Application has :Properties) {
-                var showSec = Application.Properties.getValue("ShowSeconds");
                 var stepGoal = Application.Properties.getValue("StepGoalOverride");
-                if (showSec != null) { mShowSeconds = showSec; }
+                var compass  = Application.Properties.getValue("EnableCompass");
                 if (stepGoal != null) { mStepGoalOverride = stepGoal; }
+                if (compass != null)  { mEnableCompass = compass; }
             }
         } catch (e) {
             // keep defaults
@@ -120,47 +121,42 @@ class AbyssView extends WatchUi.WatchFace {
         mCenterX = mWidth / 2;
         mCenterY = mHeight / 2;
         mRadius = (mWidth < mHeight ? mWidth : mHeight) / 2;
+        mSmall = (mWidth <= 320);
         initFonts();
 
-        // Optional art - cached once, drawn only when the matching USE_ART_* flag
-        // is on. The declared placeholder PNGs are transparent, so even with a flag
-        // on nothing breaks until you drop in real art. A failed load leaves the
-        // field null and the procedural fallback takes over.
         try { mBgArt    = WatchUi.loadResource(Rez.Drawables.bg_vignette) as WatchUi.BitmapResource; } catch (e) { mBgArt = null; }
         try { mFrameArt = WatchUi.loadResource(Rez.Drawables.hud_frame)   as WatchUi.BitmapResource; } catch (e) { mFrameArt = null; }
         try { mSonarArt = WatchUi.loadResource(Rez.Drawables.sonar_ring)  as WatchUi.BitmapResource; } catch (e) { mSonarArt = null; }
     }
 
-    // Vector fonts scale to the panel and give the clean, technical "PDA readout"
-    // look this face wants. Built-ins are the last-resort fallback. (If you prefer
-    // a baked bitmap font, see tools/gen_fonts.py + the README font note.)
     function initFonts() as Void {
-        if (Graphics has :getVectorFont) {
+        // Large AMOLED panels: crisp scalable vector fonts, sized to the screen.
+        if (!mSmall && (Graphics has :getVectorFont)) {
             var face = ["RobotoCondensedBold", "RobotoRegular", "sans-serif"] as Array<String>;
-            mFontTime  = Graphics.getVectorFont({ :face => face, :size => (mWidth * 0.215).toNumber() });
-            mFontValue = Graphics.getVectorFont({ :face => face, :size => (mWidth * 0.075).toNumber() });
-            mFontLabel = Graphics.getVectorFont({ :face => face, :size => (mWidth * 0.040).toNumber() });
+            mFontTime  = Graphics.getVectorFont({ :face => face, :size => (mWidth * 0.200).toNumber() });
+            mFontValue = Graphics.getVectorFont({ :face => face, :size => (mWidth * 0.066).toNumber() });
+            mFontLabel = Graphics.getVectorFont({ :face => face, :size => (mWidth * 0.038).toNumber() });
+            mFontMicro = Graphics.getVectorFont({ :face => face, :size => (mWidth * 0.030).toNumber() });
         }
-        // Built-in last resort if vector fonts are unavailable on this device.
-        if (mFontTime == null)  { mFontTime  = Graphics.FONT_NUMBER_THAI_HOT; }
-        if (mFontValue == null) { mFontValue = Graphics.FONT_MEDIUM; }
+        // Small MIP panels (and any vector-font fallback): the device's own bitmap
+        // fonts are hinted for the panel and read far better than hairline vector
+        // text at low resolution.
+        if (mFontTime == null)  { mFontTime  = mSmall ? Graphics.FONT_NUMBER_MEDIUM : Graphics.FONT_NUMBER_THAI_HOT; }
+        if (mFontValue == null) { mFontValue = mSmall ? Graphics.FONT_TINY  : Graphics.FONT_SMALL; }
         if (mFontLabel == null) { mFontLabel = Graphics.FONT_XTINY; }
+        if (mFontMicro == null) { mFontMicro = Graphics.FONT_XTINY; }
     }
 
     function onShow() as Void {
         loadSettings();
     }
 
-    // Single render entry point for both active and low-power frames.
+    // Single render entry point for active and low-power frames.
     function onUpdate(dc as Dc) as Void {
         var w = mWidth;
         var h = mHeight;
         var r = mRadius;
 
-        // Burn-in-safe rendering applies ONLY to AMOLED panels in Always-On mode.
-        // MIP / transflective panels (Fenix 8 Solar) have no burn-in and sit in
-        // low-power most of the time while STILL showing the full face, so they
-        // must always render the full layout.
         var burnIn = false;
         var dx = 0;
         var dy = 0;
@@ -168,21 +164,19 @@ class AbyssView extends WatchUi.WatchFace {
         var hasBurnIn = (settings has :requiresBurnInProtection) && settings.requiresBurnInProtection;
         if (hasBurnIn && mIsSleep) {
             burnIn = true;
-            // Shift all lit pixels a few px each minute to avoid burn-in.
             var phase = System.getClockTime().min % 4;
             if (phase == 1)      { dx = 4;  dy = 2; }
             else if (phase == 2) { dx = -3; dy = 4; }
             else if (phase == 3) { dx = 3;  dy = -4; }
         }
         mLowPower = burnIn;
-        mFlat = !hasBurnIn;   // MIP panels: skip soft glow rings (they band)
+        mFlat = !hasBurnIn;
 
         var cx = mCenterX + dx;
         var cy = mCenterY + dy;
 
         // --- Background ---
         if (mLowPower) {
-            // AOD: pitch black, minimal lit pixels.
             dc.setColor(0x000000, 0x000000);
             dc.clear();
         } else if (USE_ART_BG && mBgArt != null) {
@@ -193,63 +187,119 @@ class AbyssView extends WatchUi.WatchFace {
             drawAbyssBackground(dc);
         }
 
-        // --- Outer depth ring (descent gauge) ---
+        // --- Outer depth ring ---
         var ringFrac = (RING_MODE == 1) ? getStepFraction() : getDayFraction();
         drawDepthRing(dc, cx, cy, r, ringFrac);
 
-        // --- O2 / air gauge (device battery) ---
+        // --- Side tanks: BATT (device battery, left) and BODY (Body Battery, right) ---
         var stats = System.getSystemStats();
         var battery = (stats.battery != null) ? stats.battery.toNumber() : 0;
-        drawO2Gauge(dc, cx, cy, r, battery);
+        var tankW = (w * 0.050).toNumber();
+        if (tankW < 6) { tankW = 6; }
+        var leftX  = (w * 0.110).toNumber() + dx;
+        var rightX = w - (w * 0.110).toNumber() - tankW + dx;
+        drawTank(dc, leftX, cy, tankW, "BATT", battery, true, C_CYAN);
+
+        var bio = getBodyBattery();
+        drawTank(dc, rightX, cy, tankW, "BODY", (bio != null) ? bio : 0, (bio != null), C_BIO);
 
         // --- Sonar ping (active only) ---
         if (!mLowPower) {
             drawSonar(dc, cx, cy, r);
         }
 
-        // --- Optional HUD frame overlay (active only) ---
+        // --- Optional HUD frame overlay / procedural reticles (active only) ---
         if (!mLowPower && USE_ART_FRAME && mFrameArt != null) {
             dc.drawBitmap(0, 0, mFrameArt);
         } else if (!mLowPower) {
             drawCornerReticles(dc, cx, cy, r);
         }
 
-        // --- Center HUD readout ---
-        drawTime(dc, cx, (h * 0.40).toNumber() + dy);
+        // --- Center time (always shown) ---
+        drawTime(dc, cx, (h * 0.400).toNumber() + dy);
 
-        if (!burnIn) {
-            // DEPTH line (barometric elevation) just under the time.
-            drawDepthReadout(dc, cx, (h * 0.555).toNumber() + dy);
+        // Everything else is hidden in burn-in/AOD to minimize lit pixels.
+        if (burnIn) { return; }
 
-            // Bottom row: TEMP (left) and HR (right) flanking center.
-            var fieldY = (h * 0.665).toNumber() + dy;
-            drawSmallField(dc, (w * 0.34).toNumber() + dx, fieldY, "TEMP", getTempStr());
-            drawSmallField(dc, (w * 0.66).toNumber() + dx, fieldY, "PULSE", getHeartStr());
+        if (mSmall) {
+            drawSmallLayout(dc, cx, h, w, settings.notificationCount);
+        } else {
+            drawRichLayout(dc, cx, h, w, settings.notificationCount);
         }
     }
 
-    // Called ~once per second in always-on mode. We only show minute-resolution
-    // time in AOD, so redraw only when the minute changes - keeping us well inside
-    // the always-on pixel/power budget.
+    // Full AMOLED layout: rich top stack + two dense bottom rows.
+    function drawRichLayout(dc as Dc, cx as Number, h as Number, w as Number, notif as Number) as Void {
+        // --- Top instrument stack ---
+        drawSunLine(dc, cx, (h * 0.110).toNumber());
+        drawDateLine(dc, cx, (h * 0.155).toNumber(), notif);
+        drawWeatherLine(dc, cx, (h * 0.200).toNumber());
+        drawActivityLine(dc, cx, (h * 0.245).toNumber());
+        if (mEnableCompass) {
+            drawCenteredField(dc, cx, (h * 0.300).toNumber(), "HDG", getHeadingStr());
+        }
+
+        // --- DEPTH (barometric elevation) under the time ---
+        drawDepthReadout(dc, cx, (h * 0.525).toNumber());
+
+        // --- Bottom field rows ---
+        var lx = (w * 0.300).toNumber();
+        var mxx = (w * 0.500).toNumber();
+        var rx = (w * 0.700).toNumber();
+        var row1 = (h * 0.635).toNumber();
+        var row2 = (h * 0.745).toNumber();
+        // Row 1: PULSE (with resting HR sub) / CAL / FLOORS.
+        drawField(dc, lx,  row1, "PULSE",  getHeartStr(),    getRestingHrStr());
+        drawField(dc, mxx, row1, "KCAL",   getCaloriesStr(), null);
+        drawField(dc, rx,  row1, "FLOORS", getFloorsStr(),   null);
+        // Row 2: STRESS / ACTIVE min / PRESS.
+        drawField(dc, lx,  row2, "STRESS", getStressStr(),   null);
+        drawField(dc, mxx, row2, "ACTIVE", getActiveMinStr(), null);
+        drawField(dc, rx,  row2, "PRESS",  getPressureStr(), null);
+    }
+
+    // Lean layout for low-res MIP panels: fewer fields, bigger bitmap fonts so every
+    // value stays legible. Sun/weather lines and the resting-HR sub are dropped; the
+    // most useful fields ride in two roomy rows.
+    function drawSmallLayout(dc as Dc, cx as Number, h as Number, w as Number, notif as Number) as Void {
+        drawDateLine(dc, cx, (h * 0.150).toNumber(), notif);
+        drawActivityLine(dc, cx, (h * 0.225).toNumber());
+        if (mEnableCompass) {
+            drawCenteredField(dc, cx, (h * 0.300).toNumber(), "HDG", getHeadingStr());
+        }
+
+        drawDepthReadout(dc, cx, (h * 0.555).toNumber());
+
+        // Wide column spread (clear of the tank % readouts) with short labels so
+        // three fields fit per row without crowding on a 280/260px panel.
+        var lx = (w * 0.265).toNumber();
+        var mxx = (w * 0.500).toNumber();
+        var rx = (w * 0.735).toNumber();
+        var row1 = (h * 0.690).toNumber();
+        var row2 = (h * 0.820).toNumber();
+        // Row 1: HR / TEMP / pressure.
+        drawField(dc, lx,  row1, "HR",  getHeartStr(),     null);
+        drawField(dc, mxx, row1, "TMP", getTempStr(),      null);
+        drawField(dc, rx,  row1, "BAR", getPressureStr(),  null);
+        // Row 2: stress / calories / floors.
+        drawField(dc, lx,  row2, "STR", getStressStr(),    null);
+        drawField(dc, mxx, row2, "CAL", getCaloriesStr(),  null);
+        drawField(dc, rx,  row2, "FLR", getFloorsStr(),    null);
+    }
+
     function onPartialUpdate(dc as Dc) as Void {
         var min = System.getClockTime().min;
         if (min == mLastMin) { return; }
         mLastMin = min;
-        onUpdate(dc);   // mIsSleep is true here -> low-power render path
+        onUpdate(dc);
     }
 
     // ------------------------------------------------------------------ Elements
 
-    // Procedural abyss background: a vertical gradient from a near-black blue at the
-    // top through a faint abyss glow to the darkest tone at the bottom ("the deep").
-    // Monkey C has no native gradient fill, so we stack horizontal bands.
     function drawAbyssBackground(dc as Dc) as Void {
         dc.setColor(BG_CLEAR, BG_CLEAR);
         dc.clear();
-        if (mFlat) {
-            // MIP: a smooth band gradient just muddies; a flat clear reads cleaner.
-            return;
-        }
+        if (mFlat) { return; }
         var h = mHeight;
         var mid = h / 2;
         var step = 4;
@@ -265,28 +315,22 @@ class AbyssView extends WatchUi.WatchFace {
         }
     }
 
-    // Outer descent gauge: a faint full-circle track near the bezel, a bright cyan
-    // progress arc from 12 o'clock clockwise, plus tick marks. frac in [0,1].
     function drawDepthRing(dc as Dc, cx as Number, cy as Number, r as Number, frac as Float) as Void {
         if (frac < 0.0) { frac = 0.0; }
         if (frac > 1.0) { frac = 1.0; }
         var ringR = (r * 0.92).toNumber();
 
         if (mLowPower) {
-            // AOD: a single thin dim outline, no fills.
             dc.setPenWidth(1);
             dc.setColor(C_AOD, Graphics.COLOR_TRANSPARENT);
             dc.drawCircle(cx, cy, ringR);
             return;
         }
 
-        // Faint full track.
         dc.setPenWidth(3);
         dc.setColor(scaleColor(C_CYAN, 0.20), Graphics.COLOR_TRANSPARENT);
         dc.drawCircle(cx, cy, ringR);
 
-        // Progress arc. drawArc angles are CCW with 0 deg at 3 o'clock, so start at
-        // 90 (12 o'clock) and sweep clockwise by frac of the full circle.
         var startDeg = 90;
         var endDeg = 90 - (frac * 360.0).toNumber();
         if (frac > 0.0) {
@@ -300,57 +344,50 @@ class AbyssView extends WatchUi.WatchFace {
             dc.drawArc(cx, cy, ringR, Graphics.ARC_CLOCKWISE, startDeg, endDeg);
         }
 
-        // Tick marks every 30 degrees (a depth-scale feel).
         var tickInner = ringR - (r * 0.045).toNumber();
         dc.setPenWidth(2);
+        dc.setColor(scaleColor(C_CYAN, 0.40), Graphics.COLOR_TRANSPARENT);
         for (var a = 0; a < 360; a += 30) {
             var rad = a * Math.PI / 180.0;
             var ca = Math.cos(rad);
             var sa = Math.sin(rad);
-            dc.setColor(scaleColor(C_CYAN, 0.40), Graphics.COLOR_TRANSPARENT);
             dc.drawLine(cx + (ringR * ca).toNumber(), cy - (ringR * sa).toNumber(),
                         cx + (tickInner * ca).toNumber(), cy - (tickInner * sa).toNumber());
         }
 
-        // Leading-edge marker dot at the current progress position.
         var headRad = (90 - frac * 360.0) * Math.PI / 180.0;
-        var hx = cx + (ringR * Math.cos(headRad)).toNumber();
-        var hy = cy - (ringR * Math.sin(headRad)).toNumber();
         dc.setColor(C_CYAN_BRIGHT, Graphics.COLOR_TRANSPARENT);
-        dc.fillCircle(hx, hy, (r * 0.018).toNumber() + 2);
+        dc.fillCircle(cx + (ringR * Math.cos(headRad)).toNumber(),
+                      cy - (ringR * Math.sin(headRad)).toNumber(), (r * 0.018).toNumber() + 2);
     }
 
-    // O2 / air-supply gauge: a vertical segmented tank on the left, draining with
-    // the device battery. Color shifts cyan -> amber -> red as it empties.
-    function drawO2Gauge(dc as Dc, cx as Number, cy as Number, r as Number, level as Number) as Void {
+    // A vertical segmented tank gauge that fills from the bottom. `high` is the
+    // healthy-end color; it warms to amber then red as the level drops.
+    function drawTank(dc as Dc, x as Number, cy as Number, tankW as Number,
+                      label as String, level as Number, available as Boolean, high as Number) as Void {
         if (level < 0) { level = 0; }
         if (level > 100) { level = 100; }
         var frac = level / 100.0;
-
-        var tankW = (mWidth * 0.052).toNumber();
-        if (tankW < 6) { tankW = 6; }
         var tankH = (mHeight * 0.34).toNumber();
-        var x = (mWidth * 0.115).toNumber();
         var top = cy - tankH / 2;
         var rad = tankW / 2;
-        var color = o2Color(level);
+        var color = available ? tankColor(level, high) : C_AOD;
 
         if (mLowPower) {
-            // AOD: thin outline + a single level tick.
             dc.setPenWidth(1);
             dc.setColor(C_AOD, Graphics.COLOR_TRANSPARENT);
             dc.drawRoundedRectangle(x, top, tankW, tankH, rad);
-            var ly = (top + tankH * (1.0 - frac)).toNumber();
-            dc.drawLine(x, ly, x + tankW, ly);
+            if (available) {
+                var ly = (top + tankH * (1.0 - frac)).toNumber();
+                dc.drawLine(x, ly, x + tankW, ly);
+            }
             return;
         }
 
-        // Tank housing (dark glass).
         dc.setColor(0x06121C, Graphics.COLOR_TRANSPARENT);
         dc.fillRoundedRectangle(x, top, tankW, tankH, rad);
 
-        // Fill from the bottom.
-        if (frac > 0.0) {
+        if (available && frac > 0.0) {
             var fillH = (tankH * frac).toNumber();
             if (fillH < tankW) { fillH = tankW; }
             var fy = top + tankH - fillH;
@@ -360,12 +397,10 @@ class AbyssView extends WatchUi.WatchFace {
             }
             dc.setColor(color, Graphics.COLOR_TRANSPARENT);
             dc.fillRoundedRectangle(x, fy, tankW, fillH, rad);
-            // Bright meniscus at the surface.
             dc.setColor(lerpColor(color, 0xFFFFFF, 0.4), Graphics.COLOR_TRANSPARENT);
             dc.fillRectangle(x, fy, tankW, 2);
         }
 
-        // Segment dividers every 25% (tank gauge ticks).
         dc.setPenWidth(1);
         dc.setColor(0x0A1E2A, Graphics.COLOR_TRANSPARENT);
         for (var i = 1; i < 4; i += 1) {
@@ -373,56 +408,39 @@ class AbyssView extends WatchUi.WatchFace {
             dc.drawLine(x, sy, x + tankW, sy);
         }
 
-        // Housing outline.
         dc.setPenWidth(2);
         dc.setColor(scaleColor(color, 0.7), Graphics.COLOR_TRANSPARENT);
         dc.drawRoundedRectangle(x, top, tankW, tankH, rad);
 
-        // "O2" label above + percentage below.
+        var cxT = x + tankW / 2;
         dc.setColor(color, Graphics.COLOR_TRANSPARENT);
-        dc.drawText(x + tankW / 2, top - (mHeight * 0.045).toNumber(), mFontLabel, "O2",
+        dc.drawText(cxT, top - (mHeight * 0.042).toNumber(), mFontLabel, label,
             Graphics.TEXT_JUSTIFY_CENTER | Graphics.TEXT_JUSTIFY_VCENTER);
-        dc.drawText(x + tankW / 2, top + tankH + (mHeight * 0.045).toNumber(), mFontLabel,
-            level.format("%d") + "%",
+        dc.drawText(cxT, top + tankH + (mHeight * 0.042).toNumber(), mFontLabel,
+            available ? (level.format("%d") + "%") : "--",
             Graphics.TEXT_JUSTIFY_CENTER | Graphics.TEXT_JUSTIFY_VCENTER);
     }
 
-    // O2 gauge color: cyan when healthy, blending to amber then red as it drains.
-    function o2Color(level as Number) as Number {
-        if (level <= O2_LOW) { return C_RED; }
-        if (level <= O2_WARN) {
-            // O2_LOW..O2_WARN: red -> amber
-            var t = (level - O2_LOW).toFloat() / (O2_WARN - O2_LOW);
-            return lerpColor(C_RED, C_AMBER, t);
+    function tankColor(level as Number, high as Number) as Number {
+        if (level <= LOW_PCT) { return C_RED; }
+        if (level <= WARN_PCT) {
+            return lerpColor(C_RED, C_AMBER, (level - LOW_PCT).toFloat() / (WARN_PCT - LOW_PCT));
         }
-        // O2_WARN..100: amber -> cyan
-        var t2 = (level - O2_WARN).toFloat() / (100 - O2_WARN);
-        return lerpColor(C_AMBER, C_CYAN, t2);
+        return lerpColor(C_AMBER, high, (level - WARN_PCT).toFloat() / (100 - WARN_PCT));
     }
 
-    // Sonar ping: an expanding cyan ring that fades as it grows. ACTIVE state only.
-    //
-    // NOTE on cadence: a watch face's onUpdate normally fires only ~once a minute,
-    // so true per-second animation is not available in active mode. We key the ring
-    // radius to the current SECONDS value, so whenever the face does redraw (wrist
-    // raise, minute tick, app event) the ping reflects "now" and reads as a live
-    // sonar sweep. It is skipped entirely in always-on/low-power.
     function drawSonar(dc as Dc, cx as Number, cy as Number, r as Number) as Void {
         if (USE_ART_SONAR && mSonarArt != null) {
             dc.drawBitmap(0, 0, mSonarArt);
             return;
         }
-        if (mFlat) { return; }   // skip on MIP (faint rings just band)
-
+        if (mFlat) { return; }
         var sec = System.getClockTime().sec;
-        var phase = (sec % 3) / 3.0;             // 0..1 over a 3-second sweep
+        var phase = (sec % 3) / 3.0;
         var pingR = (r * 0.30 + phase * r * 0.45).toNumber();
-        // Fade from cyan toward the background as it expands.
-        var c = lerpColor(C_CYAN, C_BG_MID, phase);
         dc.setPenWidth(2);
-        dc.setColor(c, Graphics.COLOR_TRANSPARENT);
+        dc.setColor(lerpColor(C_CYAN, C_BG_MID, phase), Graphics.COLOR_TRANSPARENT);
         dc.drawCircle(cx, cy, pingR);
-        // A fainter trailing ring for depth.
         if (phase < 0.6) {
             dc.setPenWidth(1);
             dc.setColor(lerpColor(C_CYAN, C_BG_MID, phase + 0.3), Graphics.COLOR_TRANSPARENT);
@@ -430,8 +448,6 @@ class AbyssView extends WatchUi.WatchFace {
         }
     }
 
-    // Thin cyan corner reticles - a HUD-frame accent at the four diagonals.
-    // (Replaced by hud_frame.png art when USE_ART_FRAME is enabled.)
     function drawCornerReticles(dc as Dc, cx as Number, cy as Number, r as Number) as Void {
         if (mFlat) { return; }
         var d = (r * 0.62).toNumber();
@@ -450,74 +466,159 @@ class AbyssView extends WatchUi.WatchFace {
     function drawTime(dc as Dc, cx as Number, cy as Number) as Void {
         var clock = System.getClockTime();
         var hour = clock.hour;
-        var min = clock.min;
         var is24 = System.getDeviceSettings().is24Hour;
         if (!is24) {
             hour = hour % 12;
             if (hour == 0) { hour = 12; }
         }
         var hourStr = is24 ? hour.format("%02d") : hour.format("%d");
-        var timeStr = hourStr + ":" + min.format("%02d");
-
+        var timeStr = hourStr + ":" + clock.min.format("%02d");
         dc.setColor(mLowPower ? C_AOD : C_TEXT, Graphics.COLOR_TRANSPARENT);
         dc.drawText(cx, cy, mFontTime, timeStr,
             Graphics.TEXT_JUSTIFY_CENTER | Graphics.TEXT_JUSTIFY_VCENTER);
     }
 
-    // "DEPTH" readout driven by barometric elevation. On land this is your altitude,
-    // labeled like a dive depth field. Blank ("--") if the sensor is unavailable.
+    // Top line: sunrise / sunset surface-light times, flanking a small sun marker.
+    function drawSunLine(dc as Dc, cx as Number, y as Number) as Void {
+        var t = getSunTimes();   // [riseStr, setStr]
+        var gap = (mWidth * 0.085).toNumber();
+        // Sun marker.
+        if (!mFlat) {
+            dc.setColor(scaleColor(C_AMBER, 0.8), Graphics.COLOR_TRANSPARENT);
+            dc.fillCircle(cx, y, (mWidth * 0.012).toNumber() + 1);
+        }
+        dc.setColor(C_TEXT_DIM, Graphics.COLOR_TRANSPARENT);
+        dc.drawText(cx - gap, y, mFontMicro, t[0],
+            Graphics.TEXT_JUSTIFY_RIGHT | Graphics.TEXT_JUSTIFY_VCENTER);
+        dc.drawText(cx + gap, y, mFontMicro, t[1],
+            Graphics.TEXT_JUSTIFY_LEFT | Graphics.TEXT_JUSTIFY_VCENTER);
+    }
+
+    // Date "dive-log" line, with a small notification badge appended when unread > 0.
+    function drawDateLine(dc as Dc, cx as Number, y as Number, notif as Number) as Void {
+        var info = Gregorian.info(Time.now(), Time.FORMAT_MEDIUM);
+        var dateStr = info.day_of_week.toUpper() + "  " + info.month.toUpper() + " " + info.day.format("%d");
+        dc.setColor(C_TEXT_DIM, Graphics.COLOR_TRANSPARENT);
+        dc.drawText(cx, y, mFontLabel, dateStr,
+            Graphics.TEXT_JUSTIFY_CENTER | Graphics.TEXT_JUSTIFY_VCENTER);
+
+        if (notif != null && notif > 0) {
+            var halfW = dc.getTextWidthInPixels(dateStr, mFontLabel) / 2;
+            var bx = cx + halfW + (mWidth * 0.050).toNumber();
+            var br = (mWidth * 0.026).toNumber() + 1;
+            dc.setColor(C_CYAN, Graphics.COLOR_TRANSPARENT);
+            dc.fillCircle(bx, y, br);
+            dc.setColor(C_BG_TOP, Graphics.COLOR_TRANSPARENT);
+            dc.drawText(bx, y, mFontMicro, (notif > 9) ? "9+" : notif.format("%d"),
+                Graphics.TEXT_JUSTIFY_CENTER | Graphics.TEXT_JUSTIFY_VCENTER);
+        }
+    }
+
+    // Steps + distance on one compact line ("8.4K   6.2KM").
+    function drawActivityLine(dc as Dc, cx as Number, y as Number) as Void {
+        var gap = (mWidth * 0.075).toNumber();
+        dc.setColor(C_CYAN, Graphics.COLOR_TRANSPARENT);
+        dc.drawText(cx - gap, y, mFontLabel, getStepsStr(),
+            Graphics.TEXT_JUSTIFY_RIGHT | Graphics.TEXT_JUSTIFY_VCENTER);
+        dc.drawText(cx + gap, y, mFontLabel, getDistanceStr(),
+            Graphics.TEXT_JUSTIFY_LEFT | Graphics.TEXT_JUSTIFY_VCENTER);
+        // Tiny center divider tick.
+        dc.setColor(C_TEXT_DIM, Graphics.COLOR_TRANSPARENT);
+        dc.drawText(cx, y, mFontMicro, "/",
+            Graphics.TEXT_JUSTIFY_CENTER | Graphics.TEXT_JUSTIFY_VCENTER);
+    }
+
     function drawDepthReadout(dc as Dc, cx as Number, y as Number) as Void {
-        var depthStr = getElevationStr();
         dc.setColor(C_TEXT_DIM, Graphics.COLOR_TRANSPARENT);
         dc.drawText(cx, y - (mHeight * 0.040).toNumber(), mFontLabel, "DEPTH",
             Graphics.TEXT_JUSTIFY_CENTER | Graphics.TEXT_JUSTIFY_VCENTER);
         dc.setColor(C_CYAN_BRIGHT, Graphics.COLOR_TRANSPARENT);
-        dc.drawText(cx, y + (mHeight * 0.012).toNumber(), mFontValue, depthStr,
+        dc.drawText(cx, y + (mHeight * 0.012).toNumber(), mFontValue, getElevationStr(),
             Graphics.TEXT_JUSTIFY_CENTER | Graphics.TEXT_JUSTIFY_VCENTER);
     }
 
-    // A small labeled HUD field: dim label above, cyan value below.
-    function drawSmallField(dc as Dc, x as Number, y as Number, label as String, value as String) as Void {
+    // A small labeled HUD field: dim label above, cyan value below, and an optional
+    // dim sub-value (e.g. resting HR under the live pulse) beneath that.
+    function drawField(dc as Dc, x as Number, y as Number, label as String,
+                       value as String, sub as String or Null) as Void {
         dc.setColor(C_TEXT_DIM, Graphics.COLOR_TRANSPARENT);
-        dc.drawText(x, y - (mHeight * 0.028).toNumber(), mFontLabel, label,
+        dc.drawText(x, y - (mHeight * 0.026).toNumber(), mFontMicro, label,
             Graphics.TEXT_JUSTIFY_CENTER | Graphics.TEXT_JUSTIFY_VCENTER);
         dc.setColor(C_CYAN, Graphics.COLOR_TRANSPARENT);
-        dc.drawText(x, y + (mHeight * 0.012).toNumber(), mFontValue, value,
+        dc.drawText(x, y + (mHeight * 0.014).toNumber(), mFontValue, value,
             Graphics.TEXT_JUSTIFY_CENTER | Graphics.TEXT_JUSTIFY_VCENTER);
+        if (sub != null) {
+            dc.setColor(C_TEXT_DIM, Graphics.COLOR_TRANSPARENT);
+            dc.drawText(x, y + (mHeight * 0.052).toNumber(), mFontMicro, sub,
+                Graphics.TEXT_JUSTIFY_CENTER | Graphics.TEXT_JUSTIFY_VCENTER);
+        }
+    }
+
+    // Weather line: condition word (left), current temp (center), hi/lo (right).
+    function drawWeatherLine(dc as Dc, cx as Number, y as Number) as Void {
+        var gap = (mWidth * 0.150).toNumber();
+        dc.setColor(C_TEXT_DIM, Graphics.COLOR_TRANSPARENT);
+        dc.drawText(cx - gap, y, mFontMicro, getWeatherCondStr(),
+            Graphics.TEXT_JUSTIFY_RIGHT | Graphics.TEXT_JUSTIFY_VCENTER);
+        dc.setColor(C_CYAN, Graphics.COLOR_TRANSPARENT);
+        dc.drawText(cx, y, mFontLabel, getTempStr(),
+            Graphics.TEXT_JUSTIFY_CENTER | Graphics.TEXT_JUSTIFY_VCENTER);
+        dc.setColor(C_TEXT_DIM, Graphics.COLOR_TRANSPARENT);
+        dc.drawText(cx + gap, y, mFontMicro, getWeatherHiLoStr(),
+            Graphics.TEXT_JUSTIFY_LEFT | Graphics.TEXT_JUSTIFY_VCENTER);
+    }
+
+    // Like drawField but single-line label + value (used for the optional heading).
+    function drawCenteredField(dc as Dc, cx as Number, y as Number, label as String, value as String) as Void {
+        var gap = (mWidth * 0.010).toNumber();
+        dc.setColor(C_TEXT_DIM, Graphics.COLOR_TRANSPARENT);
+        dc.drawText(cx - gap, y, mFontLabel, label + " ",
+            Graphics.TEXT_JUSTIFY_RIGHT | Graphics.TEXT_JUSTIFY_VCENTER);
+        dc.setColor(C_CYAN, Graphics.COLOR_TRANSPARENT);
+        dc.drawText(cx + gap, y, mFontLabel, value,
+            Graphics.TEXT_JUSTIFY_LEFT | Graphics.TEXT_JUSTIFY_VCENTER);
     }
 
     // ------------------------------------------------------------------- Data
 
-    // Fraction of the day elapsed (midnight -> now), 0.0 .. 1.0.
     function getDayFraction() as Float {
         var c = System.getClockTime();
-        var secs = c.hour * 3600 + c.min * 60 + c.sec;
-        return secs.toFloat() / 86400.0;
+        return (c.hour * 3600 + c.min * 60 + c.sec).toFloat() / 86400.0;
     }
 
-    // Today's steps as a fraction of the step goal (0.0 .. 1.0).
     function getStepFraction() as Float {
         var info = ActivityMonitor.getInfo();
         if (info == null || info.steps == null) { return 0.0; }
         var goal = mStepGoalOverride;
         if (goal <= 0) {
-            if (info.stepGoal != null && info.stepGoal > 0) {
-                goal = info.stepGoal;
-            } else {
-                goal = 10000;   // sane fallback
-            }
+            goal = (info.stepGoal != null && info.stepGoal > 0) ? info.stepGoal : 10000;
         }
         if (goal <= 0) { return 0.0; }
         var f = info.steps.toFloat() / goal.toFloat();
-        if (f > 1.0) { f = 1.0; }
-        return f;
+        return (f > 1.0) ? 1.0 : f;
     }
 
-    // Barometric elevation in meters, formatted with an "M" suffix. "--" if absent.
-    // Uses Activity.getActivityInfo().altitude (barometric on the tactix 8); the
-    // value can be null when no fix/sensor data is available, so we fail gracefully.
-    // TWEAK: change the unit/label here if you want feet, or to flip the sign for a
-    // true "depth below surface" feel.
+    // Body Battery (0-100) via SensorHistory, or null if unavailable.
+    function getBodyBattery() as Number or Null {
+        try {
+            if ((Toybox has :SensorHistory) && (SensorHistory has :getBodyBatteryHistory)) {
+                var iter = SensorHistory.getBodyBatteryHistory({ :period => 1, :order => SensorHistory.ORDER_NEWEST_FIRST });
+                if (iter != null) {
+                    var sample = iter.next();
+                    if (sample != null && sample.data != null) {
+                        var v = sample.data.toNumber();
+                        if (v < 0) { v = 0; }
+                        if (v > 100) { v = 100; }
+                        return v;
+                    }
+                }
+            }
+        } catch (e) {
+        }
+        return null;
+    }
+
+    // Barometric elevation in meters ("--" if absent). Tweak unit/label here for feet.
     function getElevationStr() as String {
         try {
             var info = Activity.getActivityInfo();
@@ -525,12 +626,10 @@ class AbyssView extends WatchUi.WatchFace {
                 return info.altitude.toNumber().format("%d") + "M";
             }
         } catch (e) {
-            // fall through
         }
         return "--";
     }
 
-    // Temperature from weather (falls back to "--"). Weather temperature is Celsius.
     function getTempStr() as String {
         try {
             if (Toybox has :Weather) {
@@ -540,12 +639,22 @@ class AbyssView extends WatchUi.WatchFace {
                 }
             }
         } catch (e) {
-            // fall through
         }
         return "--°";
     }
 
-    // Current heart rate via Activity info; "--" when not being read.
+    // Ambient barometric pressure in millibars / hPa ("--" if absent).
+    function getPressureStr() as String {
+        try {
+            var info = Activity.getActivityInfo();
+            if (info != null && (info has :ambientPressure) && info.ambientPressure != null) {
+                return (info.ambientPressure / 100.0).toNumber().format("%d");
+            }
+        } catch (e) {
+        }
+        return "--";
+    }
+
     function getHeartStr() as String {
         try {
             var info = Activity.getActivityInfo();
@@ -553,30 +662,279 @@ class AbyssView extends WatchUi.WatchFace {
                 return info.currentHeartRate.format("%d");
             }
         } catch (e) {
-            // fall through
         }
         return "--";
     }
 
+    // Resting heart rate from the user profile, shown as "R##" ("--" if absent).
+    function getRestingHrStr() as String {
+        try {
+            if (Toybox has :UserProfile) {
+                var p = UserProfile.getProfile();
+                if (p != null && (p has :restingHeartRate) && p.restingHeartRate != null) {
+                    return "R" + p.restingHeartRate.format("%d");
+                }
+            }
+        } catch (e) {
+        }
+        return "--";
+    }
+
+    // Calories burned today ("--" if absent).
+    function getCaloriesStr() as String {
+        var info = ActivityMonitor.getInfo();
+        if (info != null && (info has :calories) && info.calories != null) {
+            return info.calories.format("%d");
+        }
+        return "--";
+    }
+
+    // Floors climbed today ("--" if absent).
+    function getFloorsStr() as String {
+        var info = ActivityMonitor.getInfo();
+        if (info != null && (info has :floorsClimbed) && info.floorsClimbed != null) {
+            return info.floorsClimbed.format("%d");
+        }
+        return "--";
+    }
+
+    // Today's intensity/active minutes (day total) ("--" if absent).
+    function getActiveMinStr() as String {
+        var info = ActivityMonitor.getInfo();
+        if (info != null && (info has :activeMinutesDay) && info.activeMinutesDay != null) {
+            var am = info.activeMinutesDay;
+            if (am.total != null) { return am.total.format("%d"); }
+        }
+        return "--";
+    }
+
+    // Current stress score 0-100 ("--" if absent / not yet measured).
+    function getStressStr() as String {
+        var info = ActivityMonitor.getInfo();
+        if (info != null && (info has :stressScore) && info.stressScore != null) {
+            return info.stressScore.format("%d");
+        }
+        return "--";
+    }
+
+    // Short condition word ("CLEAR", "RAIN", ...) for the current weather, or "--".
+    function getWeatherCondStr() as String {
+        try {
+            if (Toybox has :Weather) {
+                var c = Weather.getCurrentConditions();
+                if (c != null && c.condition != null) {
+                    return condName(c.condition);
+                }
+            }
+        } catch (e) {
+        }
+        return "--";
+    }
+
+    // Today's forecast high/low, formatted "H24 L11" ("" if absent).
+    function getWeatherHiLoStr() as String {
+        try {
+            if (Toybox has :Weather) {
+                var c = Weather.getCurrentConditions();
+                if (c != null) {
+                    var hi = (c has :highTemperature) ? c.highTemperature : null;
+                    var lo = (c has :lowTemperature)  ? c.lowTemperature  : null;
+                    if (hi != null && lo != null) {
+                        return "H" + hi.format("%d") + " L" + lo.format("%d");
+                    }
+                }
+            }
+        } catch (e) {
+        }
+        return "";
+    }
+
+    // Bucket the (large) Weather.CONDITION_* enum into a few compact words.
+    function condName(c as Number) as String {
+        if (c == Weather.CONDITION_CLEAR || c == Weather.CONDITION_MOSTLY_CLEAR ||
+            c == Weather.CONDITION_PARTLY_CLEAR) { return "CLEAR"; }
+        if (c == Weather.CONDITION_FAIR) { return "FAIR"; }
+        if (c == Weather.CONDITION_PARTLY_CLOUDY || c == Weather.CONDITION_THIN_CLOUDS) {
+            return "PT CLD";
+        }
+        if (c == Weather.CONDITION_CLOUDY || c == Weather.CONDITION_MOSTLY_CLOUDY) {
+            return "CLOUDY";
+        }
+        if (c == Weather.CONDITION_WINDY) { return "WIND"; }
+        if (c == Weather.CONDITION_FOG || c == Weather.CONDITION_MIST ||
+            c == Weather.CONDITION_HAZE || c == Weather.CONDITION_HAZY) { return "FOG"; }
+        if (c == Weather.CONDITION_THUNDERSTORMS || c == Weather.CONDITION_SCATTERED_THUNDERSTORMS ||
+            c == Weather.CONDITION_CHANCE_OF_THUNDERSTORMS || c == Weather.CONDITION_SQUALL ||
+            c == Weather.CONDITION_HURRICANE || c == Weather.CONDITION_TROPICAL_STORM ||
+            c == Weather.CONDITION_TORNADO) { return "STORM"; }
+        if (c == Weather.CONDITION_RAIN_SNOW || c == Weather.CONDITION_CHANCE_OF_RAIN_SNOW ||
+            c == Weather.CONDITION_CLOUDY_CHANCE_OF_RAIN_SNOW || c == Weather.CONDITION_LIGHT_RAIN_SNOW ||
+            c == Weather.CONDITION_HEAVY_RAIN_SNOW || c == Weather.CONDITION_WINTRY_MIX ||
+            c == Weather.CONDITION_SLEET || c == Weather.CONDITION_FREEZING_RAIN) { return "MIX"; }
+        if (c == Weather.CONDITION_SNOW || c == Weather.CONDITION_LIGHT_SNOW ||
+            c == Weather.CONDITION_HEAVY_SNOW || c == Weather.CONDITION_FLURRIES ||
+            c == Weather.CONDITION_CHANCE_OF_SNOW || c == Weather.CONDITION_CLOUDY_CHANCE_OF_SNOW ||
+            c == Weather.CONDITION_ICE || c == Weather.CONDITION_ICE_SNOW ||
+            c == Weather.CONDITION_HAIL) { return "SNOW"; }
+        if (c == Weather.CONDITION_RAIN || c == Weather.CONDITION_LIGHT_RAIN ||
+            c == Weather.CONDITION_HEAVY_RAIN || c == Weather.CONDITION_DRIZZLE ||
+            c == Weather.CONDITION_SHOWERS || c == Weather.CONDITION_LIGHT_SHOWERS ||
+            c == Weather.CONDITION_HEAVY_SHOWERS || c == Weather.CONDITION_SCATTERED_SHOWERS ||
+            c == Weather.CONDITION_CHANCE_OF_SHOWERS || c == Weather.CONDITION_CLOUDY_CHANCE_OF_RAIN) {
+            return "RAIN";
+        }
+        if (c == Weather.CONDITION_DUST || c == Weather.CONDITION_SAND ||
+            c == Weather.CONDITION_SANDSTORM || c == Weather.CONDITION_SMOKE ||
+            c == Weather.CONDITION_VOLCANIC_ASH) { return "DUST"; }
+        return "--";
+    }
+
+    // Today's steps, compact ("8.4K" above 1000).
+    function getStepsStr() as String {
+        var info = ActivityMonitor.getInfo();
+        if (info == null || info.steps == null) { return "--"; }
+        var s = info.steps;
+        if (s >= 1000) { return (s / 1000.0).format("%.1f") + "K"; }
+        return s.format("%d");
+    }
+
+    // Today's distance, in km or mi per the device unit setting.
+    function getDistanceStr() as String {
+        var info = ActivityMonitor.getInfo();
+        if (info == null || info.distance == null) { return "--"; }
+        var cm = info.distance.toFloat();   // centimeters
+        var statute = false;
+        try {
+            var ds = System.getDeviceSettings();
+            statute = (ds has :distanceUnits) && (ds.distanceUnits == System.UNIT_STATUTE);
+        } catch (e) {
+        }
+        if (statute) { return (cm / 160934.0).format("%.1f") + "MI"; }
+        return (cm / 100000.0).format("%.1f") + "KM";
+    }
+
+    // Heading in degrees, from the last-known position's course-over-ground (uses the
+    // Positioning permission we already hold - no extra Sensor permission). Best
+    // effort: reads "--" without a recent fix. Off by default (EnableCompass).
+    function getHeadingStr() as String {
+        try {
+            if (Toybox has :Position) {
+                var pi = Position.getInfo();
+                if (pi != null && (pi has :heading) && pi.heading != null) {
+                    var deg = (pi.heading * 180.0 / Math.PI).toNumber();
+                    deg = ((deg % 360) + 360) % 360;
+                    return deg.format("%d") + "°";
+                }
+            }
+        } catch (e) {
+        }
+        return "--";
+    }
+
+    // ------------------------------------------------------------ Sun times
+
+    // Returns [sunriseStr, sunsetStr] as "HH:MM" (24h), or ["--","--"] with no fix.
+    // Uses the last-known position (no live GPS) and a standard sunrise equation.
+    function getSunTimes() as Array<String> {
+        var loc = getLocationDeg();
+        if (loc == null) { return ["--", "--"]; }
+        try {
+            var g = Gregorian.info(Time.now(), Time.FORMAT_SHORT);
+            var tz = System.getClockTime().timeZoneOffset / 3600.0;
+            var rise = computeSun(true,  loc[0], loc[1], g.year, g.month, g.day, tz);
+            var set  = computeSun(false, loc[0], loc[1], g.year, g.month, g.day, tz);
+            return [hhmm(rise), hhmm(set)];
+        } catch (e) {
+            return ["--", "--"];
+        }
+    }
+
+    function getLocationDeg() as Array<Double> or Null {
+        try {
+            var info = Activity.getActivityInfo();
+            if (info != null && (info has :currentLocation) && info.currentLocation != null) {
+                return info.currentLocation.toDegrees();
+            }
+        } catch (e) {
+        }
+        try {
+            if (Toybox has :Position) {
+                var pi = Position.getInfo();
+                if (pi != null && pi.position != null) {
+                    return pi.position.toDegrees();
+                }
+            }
+        } catch (e) {
+        }
+        return null;
+    }
+
+    function hhmm(t as Array or Null) as String {
+        if (t == null) { return "--"; }
+        return t[0].format("%02d") + ":" + t[1].format("%02d");
+    }
+
+    // Standard sunrise/sunset equation (NOAA-style), accurate to ~1 minute.
+    function computeSun(isRise as Boolean, latD as Double, lonD as Double,
+                        year as Number, month as Number, day as Number, tzHours as Float) as Array or Null {
+        var lat = latD.toFloat();
+        var lon = lonD.toFloat();
+        var N = dayOfYear(year, month, day);
+        var lngHour = lon / 15.0;
+        var t = isRise ? (N + ((6.0 - lngHour) / 24.0)) : (N + ((18.0 - lngHour) / 24.0));
+        var M = (0.9856 * t) - 3.289;
+        var L = norm360(M + (1.916 * sinD(M)) + (0.020 * sinD(2.0 * M)) + 282.634);
+        var RA = norm360(atanD(0.91764 * tanD(L)));
+        // Put RA in the same quadrant as L.
+        var Lq = (Math.floor(L / 90.0)) * 90.0;
+        var RAq = (Math.floor(RA / 90.0)) * 90.0;
+        RA = (RA + (Lq - RAq)) / 15.0;
+        var sinDec = 0.39782 * sinD(L);
+        var cosDec = cosD(asinD(sinDec));
+        var zenith = 90.833;
+        var cosH = (cosD(zenith) - (sinDec * sinD(lat))) / (cosDec * cosD(lat));
+        if (cosH > 1.0 || cosH < -1.0) { return null; }   // no rise/set today
+        var H = (isRise ? (360.0 - acosD(cosH)) : acosD(cosH)) / 15.0;
+        var T = H + RA - (0.06571 * t) - 6.622;
+        var localT = norm24(norm24(T - lngHour) + tzHours);
+        var hh = Math.floor(localT).toNumber();
+        var mm = Math.round((localT - hh) * 60.0).toNumber();
+        if (mm >= 60) { mm -= 60; hh += 1; }
+        hh = ((hh % 24) + 24) % 24;
+        return [hh, mm];
+    }
+
+    function dayOfYear(year as Number, month as Number, day as Number) as Number {
+        var cum = [0, 31, 59, 90, 120, 151, 181, 212, 243, 273, 304, 334];
+        var n = cum[month - 1] + day;
+        var leap = (year % 4 == 0 && year % 100 != 0) || (year % 400 == 0);
+        if (leap && month > 2) { n += 1; }
+        return n;
+    }
+
+    // Degree-based trig helpers (Math works in radians).
+    function sinD(d as Float) as Float { return Math.sin(d * Math.PI / 180.0); }
+    function cosD(d as Float) as Float { return Math.cos(d * Math.PI / 180.0); }
+    function tanD(d as Float) as Float { return Math.tan(d * Math.PI / 180.0); }
+    function asinD(x as Float) as Float { return Math.asin(x) * 180.0 / Math.PI; }
+    function acosD(x as Float) as Float { return Math.acos(x) * 180.0 / Math.PI; }
+    function atanD(x as Float) as Float { return Math.atan(x) * 180.0 / Math.PI; }
+    function norm360(d as Float) as Float { var v = d; while (v < 0.0) { v += 360.0; } while (v >= 360.0) { v -= 360.0; } return v; }
+    function norm24(d as Float) as Float { var v = d; while (v < 0.0) { v += 24.0; } while (v >= 24.0) { v -= 24.0; } return v; }
+
     // ------------------------------------------------------------ Color helpers
 
-    // Linear interpolate between two 0xRRGGBB colors. t in [0,1].
     function lerpColor(c1 as Number, c2 as Number, t as Float) as Number {
         if (t < 0.0) { t = 0.0; }
         if (t > 1.0) { t = 1.0; }
-        var r1 = (c1 >> 16) & 0xFF;
-        var g1 = (c1 >> 8) & 0xFF;
-        var b1 = c1 & 0xFF;
-        var r2 = (c2 >> 16) & 0xFF;
-        var g2 = (c2 >> 8) & 0xFF;
-        var b2 = c2 & 0xFF;
+        var r1 = (c1 >> 16) & 0xFF; var g1 = (c1 >> 8) & 0xFF; var b1 = c1 & 0xFF;
+        var r2 = (c2 >> 16) & 0xFF; var g2 = (c2 >> 8) & 0xFF; var b2 = c2 & 0xFF;
         var r = (r1 + ((r2 - r1) * t)).toNumber();
         var g = (g1 + ((g2 - g1) * t)).toNumber();
         var b = (b1 + ((b2 - b1) * t)).toNumber();
         return (r << 16) | (g << 8) | b;
     }
 
-    // Scale a color's brightness toward black. f in [0,1].
     function scaleColor(c as Number, f as Float) as Number {
         return lerpColor(0x000000, c, f);
     }

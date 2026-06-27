@@ -2,9 +2,9 @@
     <string id="AppName">Abyss</string>
 
     <!-- Settings -->
-    <string id="ShowSecondsTitle">Show Seconds</string>
-    <string id="ShowSecondsPrompt">Reserved toggle (the depth ring already tracks seconds-resolution day progress).</string>
-
     <string id="StepGoalTitle">Step Goal Override</string>
     <string id="StepGoalPrompt">Steps for a full depth ring when the ring is in steps mode. Set 0 to use the watch's own daily step goal.</string>
+
+    <string id="EnableCompassTitle">Show Compass Heading</string>
+    <string id="EnableCompassPrompt">Show a HEADING field. Off by default: the magnetometer uses more battery and may read "--" on a watch face.</string>
 </strings>
